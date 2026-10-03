@@ -36,7 +36,7 @@ Reviewed candidate: Muse `5188027103eb743ec700126dabd1fdd1d6634dce`, with the ch
 
 **Validated correction:** start below Muse Continuity, at AttuneGraph's provider-neutral source-adapter boundary. Muse Continuity is still useful later for owner-visible unfinished-thread presentation, but its current provider grammar treats non-calendar/non-resource artifacts such as tasks and reminders as Muse-local. Kaj Apple/Context data must not be mislabeled as Muse-local merely to fit that contract. [B][D]
 
-V0 is deliberately synthetic and read-only: `scripts/kaj-life-state-v0.mjs` projects host-owned observations into an in-memory AttuneGraph and proves four states without connecting any personal source or granting any action authority:
+V0 is deliberately synthetic and read-only. `scripts/kaj-life-state-v0.mjs` proves the base state transition, and `scripts/lib/kaj-guardian-tick.mjs` turns that proof into a reusable per-thread reconciliation tick. The tick rebuilds current evidence in-memory on every call, accepts Muse-compatible `silent / digest / offer` timing, fails closed on stale or unknown source state, and always returns `actionAuthority: false`. Synthetic success is mechanical evidence only; it must not be promoted into learned personal helpfulness without real source observations and explicit outcomes.
 
 1. A user-asserted need remains current -> helpfulness result `offer`.
 2. A model hypothesis that the need was handled does **not** close it -> still `offer`.
