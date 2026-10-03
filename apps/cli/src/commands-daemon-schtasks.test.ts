@@ -19,6 +19,13 @@ describe("schtasks arg builders", () => {
     expect(args[args.indexOf("/TR") + 1]).toBe("node cli.js daemon");
   });
 
+  it("quotes the safe resident home inside the scheduled command", () => {
+    const args = buildSchtasksCreateArgs({
+      programArguments: ["node", "cli.js", "daemon", "--safe", "--resident-home", "C:\\Muse Home"],
+      taskName: "T"
+    });
+    expect(args[args.indexOf("/TR") + 1]).toBe('node cli.js daemon --safe --resident-home "C:\\Muse Home"');
+  });
   it("delete and query target the task by name", () => {
     expect(buildSchtasksDeleteArgs("MuseDaemon")).toEqual(["/Delete", "/F", "/TN", "MuseDaemon"]);
     expect(buildSchtasksQueryArgs("MuseDaemon")).toEqual(["/Query", "/TN", "MuseDaemon", "/XML"]);

@@ -1027,9 +1027,30 @@ export async function installDaemonAutostart(
   }
   const cliEntry = validatedEntry.entrypoint;
   if (plat === "win32") {
+    const residentHome = e.MUSE_HOME?.trim() || e.HOME?.trim() || homedir();
+    if (!isAbsolute(residentHome) || residentHome.includes("\0")) {
+      io.stderr("refusing to install daemon autostart: resident Muse home must be an absolute path without NUL bytes.\n");
+      return { ok: false };
+    }
+    let providerLock: ReturnType<typeof resolveDaemonProviderLock>;
+    try {
+      providerLock = resolveDaemonProviderLock(e);
+    } catch {
+      io.stderr("refusing to install daemon autostart: MUSE_DAEMON_PROVIDER_LOCK must be unset or 'log'.\n");
+      return { ok: false };
+    }
+    const localOnlySetting = inspectLocalOnlyEnvironmentSetting(e);
+    if (localOnlySetting === "invalid") {
+      io.stderr("refusing to install daemon autostart: MUSE_LOCAL_ONLY must be unset or an explicit true/false value.\n");
+      return { ok: false };
+    }
+    const safeResident = deliveryBrakeDecision.engaged
+      && providerLock === "log"
+      && localOnlySetting === "enabled"
+      && !parseBoolean(e.MUSE_SELFLEARN_ENABLED, true);
     const run = helpers.schtasksRun ?? defaultSchtasksRun;
     const result = await run(buildSchtasksCreateArgs({
-      programArguments: [runtimeExecutable, cliEntry, "daemon"],
+      programArguments: [runtimeExecutable, cliEntry, "daemon", ...(safeResident ? ["--safe"] : []), "--resident-home", residentHome],
       taskName: SCHTASKS_TASK_NAME
     }));
     if (result.exitCode === 0) {
@@ -1203,8 +1224,9 @@ export function registerDaemonCommands(program: Command, io: ProgramIO, helpers:
     .option("--reset-restart-circuit", "Reset the owner-local resident restart circuit, then exit")
     .option("--repair-plan", "Print a read-only, exact resident repair plan as JSON, then exit")
     .option("--apply-repair-plan <file>", "Apply one fresh owner-only repair plan after an exact stale-target recheck")
-    .option("--install", "Write a macOS LaunchAgent plist AND load it via launchctl so the daemon survives logout/reboot, then exit")
-    .option("--safe", "With --install, persist local-only + log lock + delivery brake + self-learning off for controlled activation")
+    .option("--install", "Register Muse daemon autostart on macOS (launchd) or Windows (Task Scheduler), then exit")
+    .option("--safe", "Use contained local-only + log lock + delivery brake + self-learning off (persisted by --install)")
+    .option("--resident-home <path>", "Use an explicit absolute Muse home for managed resident execution")
     .option("--uninstall", "Remove daemon autostart only; preserve notes, tasks, memory, and Personal Continuity data")
     .option("--interval <seconds>", "Tick interval in seconds (default 60)", "60")
     .option("--lead-minutes <minutes>", "Imminent-window lead in minutes (default 10)", "10")
@@ -1222,13 +1244,38 @@ export function registerDaemonCommands(program: Command, io: ProgramIO, helpers:
       readonly applyRepairPlan?: string;
       readonly install?: boolean;
       readonly safe?: boolean;
+      readonly residentHome?: string;
       readonly uninstall?: boolean;
       readonly interval: string;
       readonly leadMinutes: string;
       readonly provider?: string;
       readonly destination?: string;
     }, command: Command) => {
-      const e = env();
+      const sourceEnvironment = env();
+      const e: NodeJS.ProcessEnv = { ...sourceEnvironment };
+      const residentHome = options.residentHome?.trim();
+      if (options.residentHome !== undefined) {
+        if (!residentHome || !isAbsolute(residentHome) || residentHome.includes("\0")) {
+          io.stderr("muse daemon --resident-home must be an absolute path without NUL bytes.\n");
+          process.exitCode = 1;
+          return;
+        }
+        e.MUSE_HOME = residentHome;
+        e.HOME = residentHome;
+        e.USERPROFILE = residentHome;
+      }
+      if (options.safe) {
+        e.MUSE_DAEMON_DELIVERY_ENABLED = "false";
+        e.MUSE_DAEMON_PROVIDER_LOCK = "log";
+        e.MUSE_LOCAL_ONLY = "true";
+        e.MUSE_SELFLEARN_ENABLED = "false";
+      }
+      if (helpers.env === undefined && !options.install) {
+        for (const key of ["MUSE_HOME", "HOME", "USERPROFILE", "MUSE_DAEMON_DELIVERY_ENABLED", "MUSE_DAEMON_PROVIDER_LOCK", "MUSE_LOCAL_ONLY", "MUSE_SELFLEARN_ENABLED"] as const) {
+          const value = e[key];
+          if (value !== undefined) process.env[key] = value;
+        }
+      }
       const residentExecutionRequested = !options.init
         && !options.install
         && !options.uninstall
@@ -1238,11 +1285,7 @@ export function registerDaemonCommands(program: Command, io: ProgramIO, helpers:
         && !options.resetRestartCircuit
         && !options.repairPlan
         && options.applyRepairPlan === undefined;
-      if (options.safe && !options.install) {
-        io.stderr("muse daemon --safe is only valid with --install; it persists a contained LaunchAgent activation profile.\n");
-        process.exitCode = 1;
-        return;
-      }
+
       if (options.pauseHeavyWork && options.resumeHeavyWork) {
         io.stderr("muse daemon --pause-heavy-work and --resume-heavy-work cannot be used together.\n");
         process.exitCode = 1;
@@ -1263,6 +1306,7 @@ export function registerDaemonCommands(program: Command, io: ProgramIO, helpers:
           || options.resumeHeavyWork
           || options.resetRestartCircuit
           || options.safe
+          || options.residentHome !== undefined
           || options.provider !== undefined
           || options.destination !== undefined
           || command.getOptionValueSource("interval") === "cli"

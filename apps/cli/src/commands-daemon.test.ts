@@ -2102,16 +2102,21 @@ describe("muse daemon — one-process launcher fires real ticks", () => {
     expect(runLaunchctl).not.toHaveBeenCalled();
   });
 
-  it("rejects --safe without --install", async () => {
-    const result = await runDaemon(["--safe"], {
+  it("--safe is a runtime containment mode without --install", async () => {
+    const buildMessagingRegistry = vi.fn((): MessagingProviderRegistry => {
+      throw new Error("registry must not initialize while --safe keeps delivery braked");
+    });
+    const result = await runDaemon(["--safe", "--once"], {
+      buildMessagingRegistry,
       env: tmpEnv(),
-      registry: new MessagingProviderRegistry([capturingProvider([])])
+      registry: new MessagingProviderRegistry()
     });
 
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("only valid with --install");
+    expect(result.exitCode).toBeUndefined();
+    expect(result.stdout).toContain("delivery brake engaged");
+    expect(result.stdout).toContain("\"outboundAllowed\":false");
+    expect(buildMessagingRegistry).not.toHaveBeenCalled();
   });
-
   it("--install rejects a temporary CLI entry before writing a plist or invoking launchctl", async () => {
     const cliTempRoot = mkdtempSync(join(tmpdir(), "muse-install-temp-entry-"));
     const cliEntry = join(cliTempRoot, "dbg.mjs");
@@ -2640,6 +2645,37 @@ describe("muse daemon — one-process launcher fires real ticks", () => {
     expect(existsSync(plistFile)).toBe(false);
   });
 
+  it("--install --safe on win32 persists safe resident args without mutating ambient env", async () => {
+    const env: NodeJS.ProcessEnv = {
+      ...tmpEnv(),
+      MUSE_DAEMON_DELIVERY_ENABLED: "true",
+      MUSE_DAEMON_PROVIDER_LOCK: "",
+      MUSE_LOCAL_ONLY: "sometimes",
+      MUSE_SELFLEARN_ENABLED: "true"
+    };
+    const calls: (readonly string[])[] = [];
+    const schtasksRun = async (args: readonly string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+      calls.push(args);
+      return { exitCode: 0, stderr: "", stdout: "SUCCESS" };
+    };
+
+    const result = await runDaemon(["--install", "--safe"], {
+      env,
+      platform: "win32",
+      registry: new MessagingProviderRegistry([capturingProvider([])]),
+      schtasksRun
+    });
+
+    expect(result.exitCode).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    const taskRun = calls[0]![calls[0]!.indexOf("/TR") + 1]!;
+    expect(taskRun).toContain("daemon --safe --resident-home");
+    expect(taskRun).toContain(env.HOME!);
+    expect(env.MUSE_LOCAL_ONLY).toBe("sometimes");
+    expect(env.MUSE_DAEMON_DELIVERY_ENABLED).toBe("true");
+    expect(env.MUSE_DAEMON_PROVIDER_LOCK).toBe("");
+    expect(env.MUSE_SELFLEARN_ENABLED).toBe("true");
+  });
   it("--install on win32 rejects an invalid delivery-brake value before schtasks mutation", async () => {
     const schtasksRun = vi.fn(async () => ({ exitCode: 0, stderr: "", stdout: "SUCCESS" }));
     const result = await runDaemon(["--install"], {

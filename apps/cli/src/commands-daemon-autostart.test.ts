@@ -25,10 +25,11 @@ function stableCliPackage(): string {
   return entry;
 }
 
-function taskXml(entrypoint: string, executable = process.execPath): string {
+function taskXml(entrypoint: string, executable = process.execPath, daemonArguments = "daemon"): string {
   const escapedEntry = entrypoint.replaceAll("&", "&amp;").replaceAll("\"", "&quot;");
   const escapedExecutable = executable.replaceAll("&", "&amp;");
-  return `<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Actions Context="Author"><Exec><Command>${escapedExecutable}</Command><Arguments>&quot;${escapedEntry}&quot; daemon</Arguments></Exec></Actions></Task>`;
+  const escapedArguments = daemonArguments.replaceAll("&", "&amp;").replaceAll("\"", "&quot;");
+  return `<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Actions Context="Author"><Exec><Command>${escapedExecutable}</Command><Arguments>&quot;${escapedEntry}&quot; ${escapedArguments}</Arguments></Exec></Actions></Task>`;
 }
 
 function prefixedTaskXml(entrypoint: string): string {
@@ -160,6 +161,21 @@ describe("Task Scheduler qualification", () => {
     });
   });
 
+  it("accepts managed resident daemon arguments and rejects arbitrary daemon flags", () => {
+    const entrypoint = stableCliPackage();
+    expect(inspectScheduledTaskArtifact(
+      taskXml(entrypoint, process.execPath, 'daemon --safe --resident-home "C:\\Muse Home"'),
+      []
+    )).toMatchObject({ state: "valid" });
+    expect(inspectScheduledTaskArtifact(
+      taskXml(entrypoint, process.execPath, 'daemon --resident-home "C:\\Muse Home"'),
+      []
+    )).toMatchObject({ state: "valid" });
+    expect(inspectScheduledTaskArtifact(taskXml(entrypoint, process.execPath, "daemon --safe"), []))
+      .toMatchObject({ state: "invalid" });
+    expect(inspectScheduledTaskArtifact(taskXml(entrypoint, process.execPath, "daemon --other"), []))
+      .toMatchObject({ state: "invalid" });
+  });
   it("classifies registered tasks with missing, arbitrary, or ambiguous actions as stale or invalid", () => {
     const arbitrary = join(mkdtempSync(join(tmpdir(), "muse-scheduled-task-arbitrary-")), "entry.js");
     writeFileSync(arbitrary, "export {};\n");

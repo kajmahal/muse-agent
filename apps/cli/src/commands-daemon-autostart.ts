@@ -506,9 +506,9 @@ function hasStrictScheduledTaskSupportingSections(task: Record<string, unknown>)
     && (task.Data === undefined || typeof task.Data === "string");
 }
 
-/** Parse only the exact two arguments Muse persists: CLI entry + `daemon`. */
+/** Parse only Muse-managed daemon forms; reject arbitrary scheduled-task flags. */
 function parseScheduledTaskArguments(raw: string): readonly [string, "daemon"] | undefined {
-  const match = /^(?:"([^"]+)"|(\S+))\s+daemon$/u.exec(raw.trim());
+  const match = /^(?:"([^"]+)"|(\S+))\s+daemon(?:\s+--safe\s+--resident-home\s+(?:"([^"]+)"|(\S+))|\s+--resident-home\s+(?:"([^"]+)"|(\S+)))?$/u.exec(raw.trim());
   const entrypoint = match?.[1] ?? match?.[2];
   return entrypoint ? [entrypoint, "daemon"] : undefined;
 }
