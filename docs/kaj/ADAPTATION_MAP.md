@@ -32,16 +32,24 @@ Reviewed candidate: Muse `5188027103eb743ec700126dabd1fdd1d6634dce`, with the ch
 | **ALREADY HAVE** | Approval and effect verification infrastructure. [H][J] | Existing **Kaj approval/verification model** remains mandatory. A graph receipt, scoped display preference, scheduler event or standing objective cannot replace approval or exact-target read-back. |
 | **REJECT** | Wholesale Muse runtime adoption, duplicate services, hidden authority upgrades or unconsented observation. [A][K] | Reject autonomous third-party sends, financial-account/payment actions, raw-keystroke/continuous-screen persistence by default, graph proximity as permission, and roadmap claims presented as shipped Jimmy capabilities. Preserve explicit source scope, pause and forget controls. |
 
-## Smallest first integration seam — read-only Continuity Preview
+## Smallest first integration seam — AttuneGraph Life-State source adapter
 
-**Proposed, not implemented here:** expose one owner-invoked Kaj operation around the public `prepareContinuityPack(state, threadId, resolveExactArtifact)` function. It consumes supplied thread state and exact linked-source reads; unlike `openPreparedContinuityPack`, it does not write a delivery receipt. [B] The function checks source identity, not live-world freshness: Kaj must attach observation/version metadata and keep unknown or stale reads visibly unqualified. Do not describe this first preview as an exact stop capture, a change comparison, or a usefulness result.
+**Validated correction:** start below Muse Continuity, at AttuneGraph's provider-neutral source-adapter boundary. Muse Continuity is still useful later for owner-visible unfinished-thread presentation, but its current provider grammar treats non-calendar/non-resource artifacts such as tasks and reminders as Muse-local. Kaj Apple/Context data must not be mislabeled as Muse-local merely to fit that contract. [B][D]
 
-1. Choose one unfinished thread and explicitly link one schema-compatible owner-local task plus one note. Kaj Bootstrap/Context persists the thread/link metadata; do not copy the underlying artifacts into Muse stores. If Kaj cannot satisfy the current local-provider contract, hold this seam rather than impersonating a supported provider.
-2. On invocation, read current Kaj thread policy and resolve only those exact links from their authoritative sources. Return source IDs, observation/version metadata, unavailable evidence, and at most one open linked next-step task. No fuzzy search, inferred links, model-generated draft, graph dependency, daemon or new notification channel.
-3. Display the result in the existing Kaj surface. The preview grants no permission and records no outcome. If the owner subsequently requests an action, independently re-observe the target with Kaj Computer/Browser or Kaj Apple, reconcile changed state, pass the existing approval gate, execute, and verify the exact result. A preview snapshot never authorizes a later effect.
-4. First acceptance gate: linked-only resolution; mismatched ID/type/provider/role rejected; missing evidence visible; multiple open next steps rejected; source/policy changes between preview and action held for reassessment; zero source writes, sends, scheduled jobs or automatic outcomes. Test this in an isolated host adapter before deployment. Only afterward add explicit outcome recording and, if justified, a shadow-only Kaj Loop evaluator.
+V0 is deliberately synthetic and read-only: `scripts/kaj-life-state-v0.mjs` projects host-owned observations into an in-memory AttuneGraph and proves four states without connecting any personal source or granting any action authority:
 
-This seam adds continuity semantics while leaving the persistent guardian's lifecycle, live state and authority with Kaj. Durable AttuneGraph on Jimmy and automatic timing are separate, currently blocked/unqualified follow-ons—not prerequisites.
+1. A user-asserted need remains current -> helpfulness result `offer`.
+2. A model hypothesis that the need was handled does **not** close it -> still `offer`.
+3. Fresh source-observed purchase evidence supersedes the old need -> `silent`.
+4. The same source marked stale -> the decision query abstains and the guardian returns `hold`.
+
+The current-head projection deliberately contains only decision-relevant current assertions. Historical hypotheses remain in their authoritative/audit source rather than being kept live until they push the bounded Working Graph beyond its two-hop decision slice. This preserves provenance without confusing history with present state.
+
+First real-source integration should therefore be one **read-only Kaj source adapter** that emits bounded assertions with exact source refs, valid/recorded time, epistemic class, freshness and supersession. Kaj Computer/Browser, Kaj Apple, Kaj Context, Kaj Notify/Loop and the existing approval/verification model remain the owners around it.
+
+Windows constraint remains explicit: the reviewed AttuneGraph durable local SQLite/Admin profile fails closed on Windows today, so this V0 uses the supported in-memory engine only. Durable persistence on Jimmy is a separate qualification problem, not something to bypass. [D][E]
+
+Acceptance boundary for this seam: no external sends, purchases, bookings, daemon, scheduler replacement, automatic policy promotion or production cutover. The graph supplies bounded current evidence; it never becomes permission to act.
 
 ## Evidence pointers
 
