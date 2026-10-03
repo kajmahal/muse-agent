@@ -130,6 +130,7 @@ export function SidebarNav({
               <button
                 key={n.id}
                 className={`nav-item${current ? " active" : ""}`}
+                data-view={n.id}
                 aria-current={current ? "page" : undefined}
                 title={collapsed ? t(n.labelKey) : undefined}
                 onClick={() => onSelect(n.id)}

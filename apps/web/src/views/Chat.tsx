@@ -342,25 +342,21 @@ export function ChatView({ client, onNavigate }: { client: ApiClient; onNavigate
 
   return (
     <div className="chat-shell">
-      <div className="chat-tabs" role="tablist" aria-label={t("nav.chat")}>
+      <div className="meta-chat-head">
         <button
           type="button"
-          role="tab"
-          aria-selected={tab === "chat"}
-          className={`chat-tab${tab === "chat" ? " active" : ""}`}
-          onClick={() => setTab("chat")}
+          className="meta-chats-pill"
+          aria-label={tab === "chat" ? t("nav.chats") : t("nav.chat")}
+          onClick={() => setTab(tab === "chat" ? "history" : "chat")}
         >
-          {t("nav.chat")}
+          <Icon.chat className="nav-icon" />
+          <span>{tab === "chat" ? "Chats" : "Back"}</span>
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "history"}
-          className={`chat-tab${tab === "history" ? " active" : ""}`}
-          onClick={() => setTab("history")}
-        >
-          {t("nav.chats")}
-        </button>
+        <div className="meta-muse-identity" aria-label="Muse">
+          <span className="meta-muse-avatar" aria-hidden="true" />
+          <span className="meta-muse-name">Muse</span>
+        </div>
+        <span className="meta-chat-head-spacer" aria-hidden="true" />
       </div>
       {tab === "chat" ? (
         <ChatSession key={epoch} client={client} onNavigate={onNavigate} />
@@ -569,6 +565,23 @@ export function ChatSession({ client, onNavigate }: { client: ApiClient; onNavig
           <DeskPet boundsRef={composerWrapRef} inFlight={pending} error={error} />
           <div className="composer-box">
           <button
+            type="button"
+            className="meta-plus-btn"
+            title="Add"
+            aria-label="Add"
+            onClick={() => textareaRef.current?.focus()}
+          >
+            <Icon.plus className="nav-icon" />
+          </button>
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={voice.transcribing ? t("chat.transcribing") : "Message"}
+            rows={1}
+          />
+          <button
             className={`mic-btn${voice.recording ? " recording" : ""}`}
             title={voice.recording ? t("chat.micStop") : t("chat.mic")}
             aria-label={voice.recording ? t("chat.micStop") : t("chat.mic")}
@@ -576,20 +589,12 @@ export function ChatSession({ client, onNavigate }: { client: ApiClient; onNavig
           >
             {voice.transcribing ? <span className="spinner" /> : <Icon.mic className="nav-icon" />}
           </button>
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder={voice.transcribing ? t("chat.transcribing") : t("chat.placeholder")}
-            rows={1}
-          />
           <Button variant="primary" onClick={submit} disabled={pending || !draft.trim()} title={t("common.send")} ariaLabel={t("common.send")}>
             <Icon.send className="nav-icon" />
           </Button>
           </div>
         </div>
-        <div style={{ maxWidth: 760, margin: "8px auto 0", display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="chat-composer-meta" style={{ maxWidth: 760, margin: "8px auto 0", display: "flex", alignItems: "center", gap: 12 }}>
           <label className="autospeak-toggle">
             <input type="checkbox" checked={autoSpeak} onChange={(e) => setAutoSpeak(e.target.checked)} />
             <span>{t("chat.autospeak")}</span>
