@@ -131,7 +131,7 @@ test("a model hypothesis cannot be supplied as an authoritative open loop or res
         }
       }
     })),
-    /resolution requires source-observed or deterministic-derived evidence/
+    /resolution requires user-asserted, source-observed, or deterministic-derived evidence/
   );
 });
 

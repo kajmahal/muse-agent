@@ -98,8 +98,8 @@ function normalizeInput(input) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       throw new TypeError("resolution must be an object or null");
     }
-    if (candidate.epistemicClass !== "source-observed" && candidate.epistemicClass !== "deterministic-derived") {
-      throw new TypeError("resolution requires source-observed or deterministic-derived evidence");
+    if (candidate.epistemicClass !== "user-asserted" && candidate.epistemicClass !== "source-observed" && candidate.epistemicClass !== "deterministic-derived") {
+      throw new TypeError("resolution requires user-asserted, source-observed, or deterministic-derived evidence");
     }
     resolution = Object.freeze({
       id: requireText(candidate.id, "resolution.id"),

@@ -51,6 +51,13 @@ Windows constraint remains explicit: the reviewed AttuneGraph durable local SQLi
 
 Acceptance boundary for this seam: no external sends, purchases, bookings, daemon, scheduler replacement, automatic policy promotion or production cutover. The graph supplies bounded current evidence; it never becomes permission to act.
 
+### Conversation Observer
+
+ChatGPT raw conversation files are evidence/history, never the guardian's memory store. `scripts/lib/kaj-conversation-observer.mjs` accepts the exact committed-turn envelope (`conversationId`, turn number, content hash, timestamp, user text, assistant text) and admits only source-linked candidates with exact role-local text offsets. User spans become `user-asserted` candidates; assistant-only spans remain `model-hypothesis`. Every observer candidate is explicitly `memoryPromotion: forbidden`; memory curation remains a separate authority.
+
+QMD remains retrieval/backfill over the raw archive. It may locate historical evidence, but retrieval results do not themselves become current Life State. The reconciler must rebind evidence to exact committed-turn provenance before admission.
+
+
 ## Evidence pointers
 
 - **[A]** [Attunement product contract](../strategy/attunement.md), “Current, experimental, roadmap” and “Evidence provenance trust boundary”; [Observe O1](../design/attunement/observe-o1.md), “Honest limitation”.
