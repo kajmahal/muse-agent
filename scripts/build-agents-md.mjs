@@ -291,7 +291,7 @@ export function duplicatedSources(
  * a bare `#fragment` still resolves because the heading it names is inlined too.
  */
 export function rewriteLinks(body, fromDir, toDir = "") {
-  const reExpress = (target) => path.relative(path.join(ROOT, toDir), target) || ".";
+  const reExpress = (target) => path.relative(path.join(ROOT, toDir), target).split(path.sep).join("/") || ".";
   const withLinks = body.replace(/\]\(([^)\s]+)\)/gu, (whole, target) => {
     if (/^(https?:|mailto:|#|\/)/u.test(target)) return whole;
     const [rawPath, fragment] = target.split("#");
@@ -426,7 +426,7 @@ export function rewriteRelated(body, fromDir, toDir) {
   const match = /^---\n([\s\S]*?\n)---\n/u.exec(body);
   if (!match) return body;
   const rewritten = match[1].replace(/(^|[\s[,])(\.{1,2}\/[^\s,\]]+\.md)/gu, (whole, lead, target) =>
-    `${lead}${path.relative(path.join(ROOT, toDir), path.resolve(ROOT, fromDir, target))}`);
+    `${lead}${path.relative(path.join(ROOT, toDir), path.resolve(ROOT, fromDir, target)).split(path.sep).join("/")}`);
   return `---\n${rewritten}---\n${body.slice(match[0].length)}`;
 }
 
