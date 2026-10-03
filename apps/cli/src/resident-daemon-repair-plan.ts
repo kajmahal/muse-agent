@@ -78,7 +78,7 @@ function sortedProcesses(
     || left.ppid - right.ppid
     || left.role.localeCompare(right.role)
     || left.startedAt.localeCompare(right.startedAt)
-    || left.cwd.localeCompare(right.cwd)
+    || (left.cwd ?? "").localeCompare(right.cwd ?? "")
     || left.executableRealpath.localeCompare(right.executableRealpath)
     || Number(left.matchesLaunchdPid) - Number(right.matchesLaunchdPid)
   );

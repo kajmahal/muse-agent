@@ -65,7 +65,7 @@ const POLICY_KEYS = [
 export function resolveResidentDaemonRestartStateFilePath(
   env: Readonly<Record<string, string | undefined>>
 ): string | undefined {
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
   if (!isAbsolute(home) || home.includes("\0")) return undefined;
   const ownerRoot = resolve(home);
   const override = env.MUSE_DAEMON_RESTART_STATE_FILE?.trim();
@@ -90,7 +90,7 @@ export async function validateResidentDaemonRestartStatePath(
 ): Promise<boolean> {
   const expected = resolveResidentDaemonRestartStateFilePath(env);
   if (expected === undefined || expected !== resolve(file)) return false;
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
   const ownerRoot = resolve(home);
   const parent = dirname(expected);
   const fromOwner = relative(ownerRoot, parent);

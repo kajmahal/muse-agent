@@ -211,7 +211,7 @@ export type ResidentMuseProcessRole = "resident" | "orphan-api" | "orphan-api-de
 export interface ResidentMuseProcess {
   readonly pid: number;
   readonly ppid: number;
-  readonly cwd: string;
+  readonly cwd?: string;
   readonly executableRealpath: string;
   readonly startedAt: string;
   readonly role: ResidentMuseProcessRole;
@@ -336,7 +336,7 @@ export function classifyResidentDaemonHealth(
 ): ResidentDaemonHealthResult {
   const failed: ResidentDaemonHealthReasonCode[] = [];
   const unverified: ResidentDaemonHealthReasonCode[] = [];
-  if (observation.platform !== "darwin") unverified.push(RESIDENT_DAEMON_HEALTH_REASON.platformUnverified);
+  if (observation.platform !== "darwin" && observation.platform !== "win32") unverified.push(RESIDENT_DAEMON_HEALTH_REASON.platformUnverified);
   if (observation.autostartProbe !== "ok") unverified.push(RESIDENT_DAEMON_HEALTH_REASON.autostartProbeUnverified);
   if (observation.artifact === "missing") failed.push(RESIDENT_DAEMON_HEALTH_REASON.artifactMissing);
   else if (observation.artifact === "invalid") failed.push(RESIDENT_DAEMON_HEALTH_REASON.artifactInvalid);
@@ -611,6 +611,45 @@ export function parseResidentLaunchctlSnapshot(output: string): LaunchctlSnapsho
   return { arguments: arguments_, environment: { ...inheritedEnvironment, ...defaultEnvironment, ...jobEnvironment }, pid };
 }
 
+const WINDOWS_STARTUP_FILE_NAME = "MuseDaemon.cmd";
+
+function resolveWindowsStartupFile(env: NodeJS.ProcessEnv): string {
+  const profile = env.USERPROFILE?.trim() || homedir();
+  const appData = env.APPDATA?.trim() || join(profile, "AppData", "Roaming");
+  return join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", WINDOWS_STARTUP_FILE_NAME);
+}
+
+function parseResidentWindowsStartupArtifact(
+  body: string
+): { readonly arguments: readonly string[]; readonly environment: Readonly<Record<string, string>> } | undefined {
+  const lines = body.replace(/\r\n/gu, "\n").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length !== 2 || lines[0] !== "@echo off") return undefined;
+  const command = lines[1] ?? "";
+  const tokens = [...command.matchAll(/"([^"]*)"/gu)].map((match) => match[1] ?? "");
+  const remainder = command.replace(/"[^"]*"/gu, "").trim();
+  if (
+    remainder.length > 0
+    || tokens.length !== 6
+    || tokens[2] !== "daemon"
+    || tokens[3] !== "--safe"
+    || tokens[4] !== "--resident-home"
+    || !isAbsolute(tokens[5] ?? "")
+  ) return undefined;
+  const residentHome = tokens[5]!;
+  return {
+    arguments: tokens,
+    environment: {
+      HOME: residentHome,
+      MUSE_DAEMON_DELIVERY_ENABLED: "false",
+      MUSE_DAEMON_PROVIDER_LOCK: "log",
+      MUSE_HOME: residentHome,
+      MUSE_LOCAL_ONLY: "true",
+      MUSE_SELFLEARN_ENABLED: "false",
+      USERPROFILE: residentHome
+    }
+  };
+}
 function resolveLaunchAgentFile(env: NodeJS.ProcessEnv): string {
   const explicit = env.MUSE_DAEMON_PLIST_FILE?.trim();
   if (explicit) return explicit;
@@ -806,6 +845,77 @@ function parseProcessTable(output: string): readonly ProcessRow[] | undefined {
   return rows;
 }
 
+interface WindowsProcessRow {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly command?: string;
+  readonly executable?: string;
+  readonly startedAtMs?: number;
+}
+
+const WINDOWS_PROCESS_QUERY = [
+  "$ErrorActionPreference='Stop'",
+  "$rows = @(Get-CimInstance Win32_Process | ForEach-Object {",
+  "  [pscustomobject]@{",
+  "    pid = [int]$_.ProcessId",
+  "    ppid = [int]$_.ParentProcessId",
+  "    command = if ($null -eq $_.CommandLine) { $null } else { [string]$_.CommandLine }",
+  "    executable = if ($null -eq $_.ExecutablePath) { $null } else { [string]$_.ExecutablePath }",
+  "    startedAt = if ($null -eq $_.CreationDate) { $null } else { $_.CreationDate.ToUniversalTime().ToString('o') }",
+  "  }",
+  "})",
+  "ConvertTo-Json -InputObject $rows -Compress -Depth 3"
+].join("\n");
+
+function parseWindowsProcessRows(output: string): readonly WindowsProcessRow[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length > 10000) return undefined;
+  const rows: WindowsProcessRow[] = [];
+  const seen = new Set<number>();
+  for (const raw of parsed) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+    const row = raw as Record<string, unknown>;
+    const pid = row.pid;
+    const ppid = row.ppid;
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(ppid) || Number(ppid) < 0) return undefined;
+    if (Number(pid) === 0) continue;
+    if (Number(pid) < 0 || seen.has(Number(pid))) return undefined;
+    seen.add(Number(pid));
+    const command = typeof row.command === "string" && row.command.trim() ? row.command : undefined;
+    const executable = typeof row.executable === "string" && row.executable.trim() ? row.executable : undefined;
+    const startedAtMs = typeof row.startedAt === "string" ? Date.parse(row.startedAt) : Number.NaN;
+    rows.push({
+      pid: Number(pid),
+      ppid: Number(ppid),
+      ...(command ? { command } : {}),
+      ...(executable ? { executable } : {}),
+      ...(Number.isFinite(startedAtMs) ? { startedAtMs } : {})
+    });
+  }
+  return rows;
+}
+
+function normalizeWindowsManagedCommand(value: string): string {
+  return value
+    .replaceAll('"', "")
+    .replaceAll("\\", "/")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function matchesWindowsResidentDefinition(
+  command: string,
+  definition: readonly string[]
+): boolean {
+  return normalizeWindowsManagedCommand(command)
+    === normalizeWindowsManagedCommand(definition.join(" "));
+}
 function descendants(rows: readonly ProcessRow[], roots: ReadonlySet<number>): Set<number> {
   const found = new Set(roots);
   let changed = true;
@@ -934,6 +1044,55 @@ async function inspectResidentMuseProcesses(
     probe: "unverified",
     processes: []
   });
+  if (platform === "win32") {
+    const table = await run("powershell.exe", ["-NoProfile", "-Command", WINDOWS_PROCESS_QUERY]);
+    const rows = table.code === 0 ? parseWindowsProcessRows(table.stdout) : undefined;
+    if (!rows) return unverified();
+    const residents = rows.flatMap((row) => {
+      if (!row.command) return [];
+      const definition = definitions.find((candidate) => matchesWindowsResidentDefinition(row.command!, candidate));
+      return definition ? [{ definition, row }] : [];
+    });
+    if (residents.length > MAX_RESIDENT_INVENTORY_PROCESSES) return unverified();
+
+    const processRows: ProcessRow[] = rows.flatMap((row) =>
+      row.command ? [{ command: row.command, pid: row.pid, ppid: row.ppid }] : []);
+    const orphanRoots = new Set(processRows
+      .filter((row) => {
+        const command = row.command.replaceAll("\\", "/").toLowerCase();
+        return command.includes("/apps/api/") && command.includes("src/index.ts");
+      })
+      .map((row) => row.pid));
+    const orphanPids = descendants(processRows, orphanRoots);
+
+    const processes: ResidentMuseProcess[] = [];
+    for (const { definition, row } of residents) {
+      if (!row.executable || row.startedAtMs === undefined) return unverified();
+      let executableRealpath: string;
+      let expectedRealpath: string;
+      try {
+        executableRealpath = realpathSync(row.executable);
+        expectedRealpath = realpathSync(definition[0]!);
+      } catch {
+        return unverified();
+      }
+      if (executableRealpath !== expectedRealpath) return unverified();
+      processes.push({
+        executableRealpath,
+        matchesLaunchdPid: launchdPid === undefined || row.pid === launchdPid,
+        pid: row.pid,
+        ppid: row.ppid,
+        role: "resident",
+        startedAt: new Date(row.startedAtMs).toISOString()
+      });
+    }
+    return {
+      orphanProcessCount: orphanPids.size,
+      orphanRootCount: orphanRoots.size,
+      probe: "ok",
+      processes
+    };
+  }
   if (platform !== "darwin") return unverified();
   const table = await run("ps", ["-axo", "pid=,ppid=,command="]);
   const rows = table.code === 0 ? parseProcessTable(table.stdout) : undefined;
@@ -1024,14 +1183,14 @@ export function resolveResidentDaemonHeartbeatFile(
 ): string | undefined {
   const sidecar = env.MUSE_PROACTIVE_SIDECAR_FILE?.trim();
   if (sidecar) return join(dirname(sidecar), "proactive-heartbeat-daemon-loop.json");
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim();
   return home ? join(home, ".muse", "proactive-heartbeat-daemon-loop.json") : undefined;
 }
 
 export function resolveResidentWriterLeaseFile(
   env: Readonly<Record<string, string | undefined>>
 ): string | undefined {
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim();
   return home ? join(home, ".muse", "resident-writer-lease", "active.json") : undefined;
 }
 
@@ -1229,17 +1388,36 @@ export async function inspectResidentDaemon(
   let artifact: ResidentDaemonObservation["artifact"];
   let diskArguments: readonly string[] | undefined;
   let diskEnvironment: Readonly<Record<string, string>> | undefined;
-  const plist = await readText(resolveLaunchAgentFile(env));
-  if (plist.state === "missing") artifact = "missing";
-  else if (plist.state !== "ok" || plist.text === undefined) artifact = "invalid";
-  else {
-    diskArguments = parseResidentLaunchAgentArguments(plist.text);
-    diskEnvironment = parseResidentLaunchAgentEnvironment(plist.text);
-    if (!diskArguments || diskArguments.length < 3 || diskEnvironment === undefined) {
+  if (platform === "win32") {
+    const startup = await readText(resolveWindowsStartupFile(env));
+    if (startup.state === "missing") {
+      artifact = "missing";
+    } else if (startup.state !== "ok" || startup.text === undefined) {
       artifact = "invalid";
     } else {
-      artifact = validateStableMuseRuntimeExecutable(diskArguments[0]).ok
-        && validateStableMuseCliEntry(diskArguments[1], { temporaryRoots }).ok ? "valid" : "stale";
+      const parsed = parseResidentWindowsStartupArtifact(startup.text);
+      if (!parsed) {
+        artifact = "invalid";
+      } else {
+        diskArguments = parsed.arguments;
+        diskEnvironment = parsed.environment;
+        artifact = validateStableMuseRuntimeExecutable(diskArguments[0]).ok
+          && validateStableMuseCliEntry(diskArguments[1], { temporaryRoots }).ok ? "valid" : "stale";
+      }
+    }
+  } else {
+    const plist = await readText(resolveLaunchAgentFile(env));
+    if (plist.state === "missing") artifact = "missing";
+    else if (plist.state !== "ok" || plist.text === undefined) artifact = "invalid";
+    else {
+      diskArguments = parseResidentLaunchAgentArguments(plist.text);
+      diskEnvironment = parseResidentLaunchAgentEnvironment(plist.text);
+      if (!diskArguments || diskArguments.length < 3 || diskEnvironment === undefined) {
+        artifact = "invalid";
+      } else {
+        artifact = validateStableMuseRuntimeExecutable(diskArguments[0]).ok
+          && validateStableMuseCliEntry(diskArguments[1], { temporaryRoots }).ok ? "valid" : "stale";
+      }
     }
   }
 
@@ -1251,6 +1429,8 @@ export async function inspectResidentDaemon(
   let liveEnvironment: Readonly<Record<string, string>> | undefined;
   let liveDefinitionMatches = false;
   let stableMuseCommand = false;
+  let windowsProcessStartMs: number | undefined;
+  let precomputedProcessProbe: ProcessInventoryProbe | undefined;
   if (platform === "darwin") {
     const listed = parseList(await run("launchctl", ["list", MUSE_LAUNCH_AGENT_LABEL]));
     runtime = listed.state;
@@ -1273,7 +1453,34 @@ export async function inspectResidentDaemon(
       }
     }
   }
-  const hostHome = env.HOME?.trim() || env.USERPROFILE?.trim();
+  if (platform === "win32") {
+    precomputedProcessProbe = await inspectResidentMuseProcesses(
+      platform,
+      run,
+      [diskArguments].filter((definition): definition is readonly string[] => definition !== undefined),
+      undefined
+    );
+    if (precomputedProcessProbe.probe === "ok") {
+      const residents = precomputedProcessProbe.processes.filter((process_) => process_.role === "resident");
+      liveProbe = "ok";
+      if (residents.length === 0) {
+        runtime = artifact === "valid" ? "not-running" : "not-registered";
+      } else {
+        runtime = "running";
+        if (residents.length === 1 && diskArguments !== undefined && diskEnvironment !== undefined) {
+          const resident = residents[0]!;
+          listPid = resident.pid;
+          livePid = resident.pid;
+          liveArguments = diskArguments;
+          liveEnvironment = diskEnvironment;
+          liveDefinitionMatches = true;
+          stableMuseCommand = artifact === "valid";
+          windowsProcessStartMs = Date.parse(resident.startedAt);
+        }
+      }
+    }
+  }
+  const hostHome = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim();
   const effectiveRuntimeEnv: NodeJS.ProcessEnv = liveEnvironment
     ? {
         ...liveEnvironment,
@@ -1284,7 +1491,7 @@ export async function inspectResidentDaemon(
     resolveResidentDaemonHeartbeatFile(effectiveRuntimeEnv),
     resolveResidentWriterLeaseFile(effectiveRuntimeEnv),
     nowMs,
-    await processStart(livePid, run),
+    platform === "win32" ? windowsProcessStartMs : await processStart(livePid, run),
     livePid
   );
   const terminal = await inspectTerminalState(
@@ -1302,14 +1509,14 @@ export async function inspectResidentDaemon(
       * RESIDENT_DAEMON_HEARTBEAT_GRACE_MULTIPLIER,
     heartbeat.generation
   );
-  const processProbe = options.inspectOrphans === false
+  const processProbe = precomputedProcessProbe ?? (options.inspectOrphans === false
     ? { orphanProcessCount: 0, orphanRootCount: 0, probe: "unverified" as const, processes: [] }
     : await inspectResidentMuseProcesses(
         platform,
         run,
         [diskArguments, liveArguments].filter((definition): definition is readonly string[] => definition !== undefined),
         livePid
-      );
+      ));
   const orphan = {
     orphanProbe: processProbe.probe,
     orphanProcessCount: processProbe.orphanProcessCount,

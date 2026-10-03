@@ -62,7 +62,7 @@ export interface ResidentDaemonFailureContext {
 export function resolveResidentDaemonTerminalStateFilePath(
   env: Readonly<Record<string, string | undefined>>
 ): string | undefined {
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
   if (!isAbsolute(home) || home.includes("\0")) return undefined;
   const ownerRoot = resolve(home);
   const override = env.MUSE_DAEMON_TERMINAL_STATE_FILE?.trim();
@@ -87,7 +87,7 @@ export async function validateResidentDaemonTerminalStatePath(
 ): Promise<boolean> {
   const expected = resolveResidentDaemonTerminalStateFilePath(env);
   if (expected === undefined || expected !== resolve(file)) return false;
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  const home = env.MUSE_HOME?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
   const ownerRoot = resolve(home);
   const parent = dirname(expected);
   const fromOwner = relative(ownerRoot, parent);

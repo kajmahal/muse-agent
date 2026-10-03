@@ -480,6 +480,73 @@ function inventoryFixture(options: {
 }
 
 describe("resident daemon read-only authority", () => {
+  it("proves a safe Windows Startup resident from the managed artifact, CIM identity, and local receipts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "muse-resident-win-"));
+    const appData = join(root, "AppData", "Roaming");
+    const startupFile = join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "MuseDaemon.cmd");
+    const cliEntry = stableCliPackage(root);
+    mkdirSync(dirname(startupFile), { recursive: true });
+    const managedCommand = '"' + process.execPath + '" "' + cliEntry + '" daemon --safe --resident-home "' + root + '"';
+    writeFileSync(startupFile, [
+      "@echo off",
+      '"' + process.execPath + '" "' + cliEntry + '" "daemon" "--safe" "--resident-home" "' + root + '"',
+      ""
+    ].join("\r\n"));
+
+    const museRoot = join(root, ".muse");
+    mkdirSync(museRoot, { mode: 0o700, recursive: true });
+    writeFileSync(
+      join(museRoot, "proactive-heartbeat-daemon-loop.json"),
+      JSON.stringify(residentHeartbeat("2026-07-22T02:59:00.000Z")),
+      { mode: 0o600 }
+    );
+    writeResidentLease(root);
+    writeResidentTerminal(root);
+    writeResidentRestart(root);
+
+    const run: ReadOnlyProcessRunner = async (executable) => executable === "powershell.exe"
+      ? {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify([{
+            command: managedCommand,
+            executable: process.execPath,
+            pid: 4321,
+            ppid: 1,
+            startedAt: "2026-07-22T02:00:00.000Z"
+          }])
+        }
+      : { code: 1, stderr: "unexpected", stdout: "" };
+
+    const result = await inspectResidentDaemon({
+      daemonTemporaryRoots: [],
+      env: {
+        APPDATA: appData,
+        MUSE_HOME: root,
+        USERPROFILE: root
+      },
+      now: () => NOW,
+      platform: "win32",
+      run
+    });
+
+    expect(result.health).toEqual({ reasonCodes: [], status: "healthy" });
+    expect(result.observation).toMatchObject({
+      artifact: "valid",
+      heartbeat: "fresh",
+      liveDefinitionMatches: true,
+      liveProbe: "ok",
+      pidAgreement: true,
+      runtime: "running",
+      stableMuseCommand: true
+    });
+    expect(result.processInventory).toMatchObject({
+      conditions: ["healthy"],
+      duplicateResidentProcessCount: 0,
+      probe: "ok",
+      residentProcessCount: 1
+    });
+  });
   it("requires matching disk/live definitions, PID, process age, and a fresh heartbeat", async () => {
     const state = fixture();
     const result = await inspectResidentDaemon({
