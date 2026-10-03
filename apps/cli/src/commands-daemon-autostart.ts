@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { validateStableMuseCliEntry, validateStableMuseRuntimeExecutable } from "@muse/runtime-state";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
@@ -56,6 +56,8 @@ export type DaemonAutostartStatus =
   | {
       readonly kind: "win32";
       readonly taskName: string;
+      readonly startupFile: string;
+      readonly mechanism: "scheduled-task" | "startup-file" | "none" | "unknown";
       readonly artifact: ScheduledTaskArtifactStatus;
       readonly registration: "registered" | "not-registered" | "unknown";
       readonly runtime: { readonly state: "unknown"; readonly reason: string };
@@ -66,11 +68,82 @@ export type DaemonAutostartStatus =
       readonly runtime: { readonly state: "unknown"; readonly reason: string };
     };
 
+export const WINDOWS_STARTUP_FILE_NAME = "MuseDaemon.cmd";
+
+export function resolveWindowsStartupFile(env: NodeJS.ProcessEnv): string {
+  const profile = env.USERPROFILE?.trim() || homedir();
+  const appData = env.APPDATA?.trim() || join(profile, "AppData", "Roaming");
+  return join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", WINDOWS_STARTUP_FILE_NAME);
+}
+
+function quoteWindowsStartupArgument(value: string): string {
+  if (value.includes("\"") || value.includes("\r") || value.includes("\n")) {
+    throw new Error("Windows Startup argument contains unsupported characters");
+  }
+  return `"${value}"`;
+}
+
+export function buildWindowsStartupFile(input: {
+  readonly runtimeExecutable: string;
+  readonly cliEntry: string;
+  readonly residentHome: string;
+}): string {
+  return [
+    "@echo off",
+    [
+      input.runtimeExecutable,
+      input.cliEntry,
+      "daemon",
+      "--safe",
+      "--resident-home",
+      input.residentHome
+    ].map(quoteWindowsStartupArgument).join(" "),
+    ""
+  ].join("\r\n");
+}
+
+export function inspectWindowsStartupFile(
+  file: string,
+  temporaryRoots: readonly string[] = []
+): ScheduledTaskArtifactStatus {
+  if (!existsSync(file)) return { state: "missing" };
+  let body: string;
+  try {
+    body = readFileSync(file, "utf8");
+  } catch (cause) {
+    return { reason: `cannot read Windows Startup file: ${String(cause)}`, state: "invalid" };
+  }
+  const lines = body.replace(/\r\n/gu, "\n").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length !== 2 || lines[0] !== "@echo off") {
+    return { reason: "Windows Startup file must contain exactly one managed command", state: "invalid" };
+  }
+  const command = lines[1] ?? "";
+  const tokens = [...command.matchAll(/"([^"]*)"/gu)].map((match) => match[1] ?? "");
+  const remainder = command.replace(/"[^"]*"/gu, "").trim();
+  if (
+    remainder.length > 0
+    || tokens.length !== 6
+    || tokens[2] !== "daemon"
+    || tokens[3] !== "--safe"
+    || tokens[4] !== "--resident-home"
+    || !isAbsolute(tokens[5] ?? "")
+  ) {
+    return { reason: "Windows Startup command is not the managed safe resident form", state: "invalid" };
+  }
+  const runtime = validateStableMuseRuntimeExecutable(tokens[0]);
+  if (!runtime.ok) return { reason: runtime.reason, state: "invalid" };
+  const entry = validateStableMuseCliEntry(tokens[1], { temporaryRoots });
+  return entry.ok
+    ? { entrypoint: entry.entrypoint, state: "valid" }
+    : { entrypoint: tokens[1], reason: entry.reason, state: "stale-entrypoint" };
+}
 export interface InspectDaemonAutostartOptions {
   readonly platform: NodeJS.Platform;
   readonly plistFile: string;
   readonly launchAgentLabel: string;
   readonly scheduledTaskName: string;
+  readonly windowsStartupFile?: string;
   readonly runLaunchctl?: (args: readonly string[]) => Promise<CommandProbeResult>;
   readonly schtasksRun?: (args: readonly string[]) => Promise<ScheduledTaskProbeResult>;
   readonly schtasksQueryArgs: (taskName: string) => readonly string[];
@@ -593,12 +666,27 @@ export function inspectScheduledTaskArtifact(
 
 export async function inspectDaemonAutostart(options: InspectDaemonAutostartOptions): Promise<DaemonAutostartStatus> {
   if (options.platform === "win32") {
+    const startupFile = options.windowsStartupFile ?? "";
+    const startupArtifact = inspectWindowsStartupFile(startupFile, options.temporaryRoots);
     if (!options.schtasksRun) {
+      if (startupArtifact.state !== "missing") {
+        return {
+          artifact: startupArtifact,
+          kind: "win32",
+          mechanism: "startup-file",
+          registration: "registered",
+          runtime: { reason: "Windows Startup registration does not prove a resident process is running", state: "unknown" },
+          startupFile,
+          taskName: options.scheduledTaskName
+        };
+      }
       return {
         artifact: { reason: "Task Scheduler probe unavailable", state: "unknown" },
         kind: "win32",
+        mechanism: "unknown",
         registration: "unknown",
-        runtime: { reason: "Task Scheduler probe unavailable", state: "unknown" },
+        runtime: { reason: "Windows autostart probe unavailable", state: "unknown" },
+        startupFile,
         taskName: options.scheduledTaskName
       };
     }
@@ -606,21 +694,36 @@ export async function inspectDaemonAutostart(options: InspectDaemonAutostartOpti
     if (query.exitCode !== 0) {
       const output = `${query.stderr}\n${query.stdout}`.trim();
       const missing = output === "ERROR: The system cannot find the file specified.";
+      if (missing && startupArtifact.state !== "missing") {
+        return {
+          artifact: startupArtifact,
+          kind: "win32",
+          mechanism: "startup-file",
+          registration: "registered",
+          runtime: { reason: "Windows Startup registration does not prove a resident process is running", state: "unknown" },
+          startupFile,
+          taskName: options.scheduledTaskName
+        };
+      }
       return {
         artifact: missing
           ? { state: "missing" }
           : { reason: `Task Scheduler query failed (exit ${query.exitCode.toString()}): ${output || "no diagnostic output"}`, state: "unknown" },
         kind: "win32",
+        mechanism: missing ? "none" : "unknown",
         registration: missing ? "not-registered" : "unknown",
-        runtime: { reason: "Task Scheduler registration does not prove a resident process is running", state: "unknown" },
+        runtime: { reason: "Windows autostart registration does not prove a resident process is running", state: "unknown" },
+        startupFile,
         taskName: options.scheduledTaskName
       };
     }
     return {
       artifact: inspectScheduledTaskArtifact(query.stdout, options.temporaryRoots),
       kind: "win32",
+      mechanism: "scheduled-task",
       registration: "registered",
       runtime: { reason: "Task Scheduler registration does not prove a resident process is running", state: "unknown" },
+      startupFile,
       taskName: options.scheduledTaskName
     };
   }
@@ -709,8 +812,13 @@ export function formatDaemonAutostartStatus(status: DaemonAutostartStatus): read
   }
   if (status.kind === "win32") {
     const registration = status.registration === "not-registered" ? "not registered" : status.registration;
+    const target = status.mechanism === "startup-file"
+      ? `startup file ${status.startupFile}`
+      : status.mechanism === "scheduled-task"
+        ? `scheduled task ${status.taskName}`
+        : "Windows user autostart";
     return [
-      `autostart:    ${registration} (scheduled task ${status.taskName})`,
+      `autostart:    ${registration} (${target})`,
       `  artifact:     ${describeArtifact(status.artifact)}`,
       `  runtime:      unknown (${status.runtime.reason})`
     ];
@@ -732,7 +840,12 @@ export function describeDaemonAutostartForDoctor(status: DaemonAutostartStatus):
   }
   if (status.kind === "win32") {
     const registration = status.registration === "not-registered" ? "not registered" : status.registration;
-    return `scheduled task ${registration}; artifact ${describeArtifact(status.artifact)}; runtime unknown — inspect Task Scheduler before trusting idle learning`;
+    const mechanism = status.mechanism === "startup-file"
+      ? `startup file ${status.startupFile}`
+      : status.mechanism === "scheduled-task"
+        ? `scheduled task ${status.taskName}`
+        : "Windows user autostart";
+    return `${mechanism} ${registration}; artifact ${describeArtifact(status.artifact)}; runtime unknown — inspect \`muse daemon --status\` before trusting idle learning`;
   }
   return `autostart unmanaged on ${status.platform}; runtime unknown — keep \`muse daemon\` resident with your service manager`;
 }

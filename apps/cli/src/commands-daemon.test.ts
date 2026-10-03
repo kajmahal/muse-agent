@@ -2676,6 +2676,33 @@ describe("muse daemon — one-process launcher fires real ticks", () => {
     expect(env.MUSE_DAEMON_PROVIDER_LOCK).toBe("");
     expect(env.MUSE_SELFLEARN_ENABLED).toBe("true");
   });
+  it("--install --safe on win32 falls back to the owner Startup folder when Task Scheduler denies access", async () => {
+    const home = mkdtempSync(join(tmpdir(), "muse-install-win-startup-"));
+    const appData = join(home, "AppData", "Roaming");
+    const env: NodeJS.ProcessEnv = {
+      ...tmpEnv(),
+      APPDATA: appData,
+      HOME: home,
+      USERPROFILE: home
+    };
+    const schtasksRun = async (): Promise<{ exitCode: number; stdout: string; stderr: string }> =>
+      ({ exitCode: 1, stderr: "ERROR: Access is denied.", stdout: "" });
+
+    const result = await runDaemon(["--install", "--safe"], {
+      env,
+      platform: "win32",
+      registry: new MessagingProviderRegistry([capturingProvider([])]),
+      schtasksRun
+    });
+
+    const startupFile = join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "MuseDaemon.cmd");
+    expect(result.exitCode).toBeUndefined();
+    expect(result.stdout).toContain("owner-local Startup fallback");
+    expect(existsSync(startupFile)).toBe(true);
+    const startup = readFileSync(startupFile, "utf8");
+    expect(startup).toContain('"daemon" "--safe" "--resident-home"');
+    expect(startup).toContain(`"${home}"`);
+  });
   it("--install on win32 rejects an invalid delivery-brake value before schtasks mutation", async () => {
     const schtasksRun = vi.fn(async () => ({ exitCode: 0, stderr: "", stdout: "SUCCESS" }));
     const result = await runDaemon(["--install"], {
@@ -2708,6 +2735,37 @@ describe("muse daemon — one-process launcher fires real ticks", () => {
     expect(existsSync(plistFile)).toBe(false);
   });
 
+  it("--uninstall on win32 removes a verified Startup fallback when no scheduled task exists", async () => {
+    const home = mkdtempSync(join(tmpdir(), "muse-uninstall-win-startup-"));
+    const appData = join(home, "AppData", "Roaming");
+    const env: NodeJS.ProcessEnv = {
+      ...tmpEnv(),
+      APPDATA: appData,
+      HOME: home,
+      USERPROFILE: home
+    };
+    const missingTask = async (): Promise<{ exitCode: number; stdout: string; stderr: string }> =>
+      ({ exitCode: 1, stderr: "ERROR: The system cannot find the file specified.", stdout: "" });
+    const install = await runDaemon(["--install", "--safe"], {
+      env,
+      platform: "win32",
+      registry: new MessagingProviderRegistry([capturingProvider([])]),
+      schtasksRun: async () => ({ exitCode: 1, stderr: "ERROR: Access is denied.", stdout: "" })
+    });
+    expect(install.exitCode).toBeUndefined();
+    const startupFile = join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "MuseDaemon.cmd");
+    expect(existsSync(startupFile)).toBe(true);
+
+    const uninstall = await runDaemon(["--uninstall"], {
+      env,
+      platform: "win32",
+      registry: new MessagingProviderRegistry([capturingProvider([])]),
+      schtasksRun: missingTask
+    });
+    expect(uninstall.exitCode).toBeUndefined();
+    expect(uninstall.stdout).toContain("Windows Startup fallback removed");
+    expect(existsSync(startupFile)).toBe(false);
+  });
   it("--uninstall on win32 verifies scheduled-task absence and preserves personal data", async () => {
     const home = mkdtempSync(join(tmpdir(), "muse-uninstall-win-"));
     const tasksFile = join(home, ".muse", "tasks.json");

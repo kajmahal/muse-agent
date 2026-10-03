@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildWindowsStartupFile,
   inspectDaemonAutostart,
   inspectScheduledTaskArtifact,
+  inspectWindowsStartupFile,
   parseLaunchAgentEnvironmentVariables,
   parseLaunchAgentProgramArguments,
   parseLaunchctlPrintSnapshot
@@ -161,6 +163,40 @@ describe("Task Scheduler qualification", () => {
     });
   });
 
+  it("validates the owner-local Windows Startup fallback and prefers it when Task Scheduler is unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "muse-startup-fallback-"));
+    const startupFile = join(root, "MuseDaemon.cmd");
+    const entrypoint = stableCliPackage();
+    writeFileSync(startupFile, buildWindowsStartupFile({
+      cliEntry: entrypoint,
+      residentHome: root,
+      runtimeExecutable: process.execPath
+    }));
+
+    expect(inspectWindowsStartupFile(startupFile)).toMatchObject({ state: "valid" });
+    const status = await inspectDaemonAutostart({
+      launchAgentLabel: "unused",
+      platform: "win32",
+      plistFile: join(root, "unused.plist"),
+      scheduledTaskName: "MuseDaemon",
+      schtasksQueryArgs: () => ["/Query"],
+      schtasksRun: async () => ({
+        exitCode: 1,
+        stderr: "ERROR: The system cannot find the file specified.",
+        stdout: ""
+      }),
+      windowsStartupFile: startupFile
+    });
+    expect(status).toMatchObject({
+      kind: "win32",
+      mechanism: "startup-file",
+      registration: "registered",
+      artifact: { state: "valid" }
+    });
+
+    writeFileSync(startupFile, "@echo off\r\ncalc.exe\r\n");
+    expect(inspectWindowsStartupFile(startupFile)).toMatchObject({ state: "invalid" });
+  });
   it("accepts managed resident daemon arguments and rejects arbitrary daemon flags", () => {
     const entrypoint = stableCliPackage();
     expect(inspectScheduledTaskArtifact(

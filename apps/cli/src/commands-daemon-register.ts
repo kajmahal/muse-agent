@@ -61,7 +61,7 @@ import { defaultProactiveHeartbeatDir, defaultSchedulerPauseFile, queryActionLog
 import { createAmbientNoticeRunner, createMessagingObjectiveActuator, createModelObjectiveEvaluator, createProposingObjectiveActuator, createWebWatchRunner, FileAmbientSignalSource, gateProactiveNoticeSink, resolveEffectiveQuietHours, MacOsActiveWindowSource, parseAmbientNoticeRules, WindowsActiveWindowSource, webWatchesFromConfig, type AmbientNoticeRunner, type BriefingCalendarLister, type ChromeSnapshotConnection, type InterruptionBudgetWiring, type ProactiveNoticeSink, type QuietHourRange, type WebWatchRunner } from "@muse/proactivity";
 import { homeWatchesFromConfig, type EmailProvider } from "@muse/domain-tools";
 import { execFile as execFileCallback } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -72,10 +72,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 const execFile = promisify(execFileCallback);
 import { buildLaunchAgentPlist, LAUNCH_AGENT_LABEL, parseLaunchAgentLabel, parseLaunchctlListInfo, resolveLaunchAgentFile } from "./commands-daemon-launchagent.js";
 import {
+  buildWindowsStartupFile,
   defaultDaemonTemporaryRoots,
   formatDaemonAutostartStatus,
   inspectDaemonAutostart,
+  inspectWindowsStartupFile,
   parseLaunchAgentEnvironmentVariables,
+  resolveWindowsStartupFile,
   validateDaemonCliEntry,
   type DaemonAutostartStatus
 } from "./commands-daemon-autostart.js";
@@ -838,6 +841,7 @@ export async function getDaemonAutostartStatus(
         ? {}
         : { runLaunchctl: defaultRunLaunchctl }),
     scheduledTaskName: SCHTASKS_TASK_NAME,
+    windowsStartupFile: resolveWindowsStartupFile(e),
     schtasksQueryArgs: buildSchtasksQueryArgs,
     temporaryRoots: helpers.daemonTemporaryRoots ?? defaultDaemonTemporaryRoots(e),
     ...(helpers.schtasksRun
@@ -1057,7 +1061,35 @@ export async function installDaemonAutostart(
       io.stdout(`muse daemon registered as scheduled task '${SCHTASKS_TASK_NAME}' (runs at logon)\n  remove with:  muse daemon --uninstall\n`);
       return { ok: true };
     }
-    io.stderr(`schtasks failed (exit ${result.exitCode.toString()}): ${result.stderr.trim() || result.stdout.trim()}\n`);
+    const diagnostic = result.stderr.trim() || result.stdout.trim();
+    if (safeResident && /access is denied/iu.test(diagnostic)) {
+      const startupFile = resolveWindowsStartupFile(e);
+      const temporaryRoots = helpers.daemonTemporaryRoots ?? defaultDaemonTemporaryRoots(e);
+      const existingStartup = inspectWindowsStartupFile(startupFile, temporaryRoots);
+      if (existingStartup.state !== "missing" && existingStartup.state !== "valid") {
+        io.stderr(`refusing Windows Startup fallback: existing ${startupFile} is not a valid Muse-managed safe daemon artifact (${existingStartup.state}).\n`);
+        return { ok: false };
+      }
+      try {
+        mkdirSync(dirname(startupFile), { recursive: true });
+        writeFileSync(startupFile, buildWindowsStartupFile({
+          cliEntry,
+          residentHome,
+          runtimeExecutable
+        }), "utf8");
+      } catch (cause) {
+        io.stderr(`Windows Startup fallback failed: ${errorMessage(cause)}\n`);
+        return { ok: false };
+      }
+      const verifiedStartup = inspectWindowsStartupFile(startupFile, temporaryRoots);
+      if (verifiedStartup.state !== "valid") {
+        io.stderr(`Windows Startup fallback verification failed: ${verifiedStartup.state}.\n`);
+        return { ok: false };
+      }
+      io.stdout(`Task Scheduler denied registration; Muse installed owner-local Startup fallback\n  ${startupFile}\n  remove with:  muse daemon --uninstall\n`);
+      return { ok: true };
+    }
+    io.stderr(`schtasks failed (exit ${result.exitCode.toString()}): ${diagnostic}\n`);
     return { ok: false };
   }
   const plistFile = resolveLaunchAgentFile(e);
@@ -1610,7 +1642,27 @@ export function registerDaemonCommands(program: Command, io: ProgramIO, helpers:
           const before = await run(buildSchtasksQueryArgs(SCHTASKS_TASK_NAME));
           if (before.exitCode !== 0) {
             if (schtasksConfirmsMissing(before)) {
-              io.stdout(`muse daemon scheduled task '${SCHTASKS_TASK_NAME}' was not installed (nothing to remove)\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
+              const startupFile = resolveWindowsStartupFile(e);
+              const startupArtifact = inspectWindowsStartupFile(
+                startupFile,
+                helpers.daemonTemporaryRoots ?? defaultDaemonTemporaryRoots(e)
+              );
+              if (startupArtifact.state === "missing") {
+                io.stdout(`muse daemon Windows autostart was not installed (nothing to remove)\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
+                return;
+              }
+              if (startupArtifact.state !== "valid") {
+                io.stderr(`refusing to remove unverified Windows Startup artifact ${startupFile}: ${startupArtifact.state}\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
+                process.exitCode = 1;
+                return;
+              }
+              rmSync(startupFile, { force: false });
+              if (existsSync(startupFile)) {
+                io.stderr(`Windows Startup artifact still exists after removal: ${startupFile}\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
+                process.exitCode = 1;
+                return;
+              }
+              io.stdout(`muse daemon Windows Startup fallback removed (absence verified)\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
               return;
             }
             io.stderr(`could not verify whether scheduled task '${SCHTASKS_TASK_NAME}' exists: ${before.stderr.trim() || before.stdout.trim() || `schtasks exit ${before.exitCode.toString()}`}\n${PERSONAL_DATA_PRESERVED_NOTICE}\n`);
